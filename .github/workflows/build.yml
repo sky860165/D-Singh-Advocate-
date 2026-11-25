@@ -1,1 +1,78 @@
+name: Build APK from ZIP
 
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      zip:
+        description: "Zip file ka naam (khali chhodo = sabse latest zip)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Unzip project
+        env:
+          ZIP_INPUT: ${{ github.event.inputs.zip }}
+        run: |
+          ZIP=""
+          if [ -n "$ZIP_INPUT" ] && [ -f "$ZIP_INPUT" ]; then ZIP="$ZIP_INPUT"; fi
+          if [ -z "$ZIP" ]; then
+            ZIP=$(git -c core.quotePath=false log --diff-filter=AM --name-only --pretty=format: -- '*.zip' | grep -i '\.zip$' | while read -r f; do if [ -f "$f" ]; then echo "$f"; break; fi; done || true)
+          fi
+          if [ -z "$ZIP" ]; then ZIP=$(ls *.zip 2>/dev/null | head -n 1 || true); fi
+          if [ -z "$ZIP" ]; then echo "Repo me koi .zip file nahi mili"; exit 1; fi
+          echo "Using zip: $ZIP"
+          rm -rf _proj app_src
+          mkdir _proj
+          unzip -q -o "$ZIP" -d _proj
+          SETTINGS=$(find _proj -name settings.gradle.kts | head -n 1)
+          if [ -z "$SETTINGS" ]; then echo "Zip ke andar settings.gradle.kts nahi mili"; exit 1; fi
+          ROOT=$(dirname "$SETTINGS")
+          mv "$ROOT" app_src
+          echo "Project ready: app_src"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Unit tests
+        working-directory: app_src
+        run: gradle testDebugUnitTest --no-daemon
+        continue-on-error: true
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: app_src/app/build/reports/tests
+          if-no-files-found: ignore
+
+      - name: Build APK
+        working-directory: app_src
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp app_src/app/build/outputs/apk/debug/app-debug.apk D-Singh-Advocate.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: D-Singh-Advocate-APK
+          path: D-Singh-Advocate.apk
